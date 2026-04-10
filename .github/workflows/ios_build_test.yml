@@ -1,0 +1,115 @@
+name: iOS Build & Screenshot
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  ios-build-test:
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.0'
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build iOS (Simulator)
+        run: flutter build ios --simulator --no-codesign
+
+      - name: List available simulators
+        run: xcrun simctl list devices available
+
+      - name: Boot iOS Simulator
+        run: |
+          # Find the latest iPhone simulator
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          for runtime, devices in data['devices'].items():
+              if 'iOS' in runtime:
+                  for d in devices:
+                      if 'iPhone' in d['name'] and d['isAvailable']:
+                          print(d['udid'])
+                          sys.exit(0)
+          " 2>/dev/null || echo "")
+          
+          if [ -z "$DEVICE_ID" ]; then
+            echo "No iPhone simulator found, creating one..."
+            DEVICE_ID=$(xcrun simctl create "Test iPhone" "iPhone 16" 2>/dev/null || xcrun simctl create "Test iPhone" "iPhone 15")
+          fi
+          
+          echo "DEVICE_ID=$DEVICE_ID" >> $GITHUB_ENV
+          echo "Booting simulator $DEVICE_ID..."
+          xcrun simctl boot "$DEVICE_ID" || true
+          
+          # Wait for simulator to be ready
+          echo "Waiting for simulator to boot..."
+          sleep 10
+
+      - name: Install app on Simulator
+        run: |
+          APP_PATH=$(find build/ios/iphonesimulator -name "*.app" -type d | head -1)
+          echo "Installing $APP_PATH on simulator $DEVICE_ID"
+          xcrun simctl install "$DEVICE_ID" "$APP_PATH"
+
+      - name: Launch app & capture screenshots
+        run: |
+          # Get the bundle ID
+          BUNDLE_ID="com.example.smsforward"
+          
+          # Launch the app
+          echo "Launching app..."
+          xcrun simctl launch "$DEVICE_ID" "$BUNDLE_ID" || true
+          
+          # Wait for app to render
+          sleep 8
+          
+          # Create screenshots directory
+          mkdir -p screenshots
+          
+          # Capture screenshot of main screen (Providers tab)
+          echo "📸 Capturing Providers tab..."
+          xcrun simctl io "$DEVICE_ID" screenshot screenshots/01_providers_tab.png
+          
+          # Wait a moment
+          sleep 2
+          
+          # Capture another screenshot
+          echo "📸 Capturing additional screenshot..."
+          xcrun simctl io "$DEVICE_ID" screenshot screenshots/02_app_running.png
+
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-screenshots
+          path: screenshots/
+          retention-days: 30
+
+      - name: Upload iOS build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-simulator-build
+          path: build/ios/iphonesimulator/
+          retention-days: 7
+
+      - name: Summary
+        run: |
+          echo "## ✅ iOS Build & Screenshots" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Build completed successfully! Download the artifacts above." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Screenshots captured:" >> $GITHUB_STEP_SUMMARY
+          for f in screenshots/*.png; do
+            echo "- $(basename $f)" >> $GITHUB_STEP_SUMMARY
+          done
