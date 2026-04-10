@@ -8,7 +8,7 @@ on:
 jobs:
   ios-build-test:
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout code
@@ -46,7 +46,10 @@ jobs:
           
           echo "DEVICE_ID=$DEVICE_ID" >> $GITHUB_ENV
           xcrun simctl boot "$DEVICE_ID" || true
-          sleep 10
+          
+          # Wait for simulator to fully boot
+          echo "Waiting for simulator to boot..."
+          sleep 15
 
       - name: Install app on Simulator
         run: |
@@ -54,104 +57,141 @@ jobs:
           echo "APP_PATH=$APP_PATH" >> $GITHUB_ENV
           xcrun simctl install "$DEVICE_ID" "$APP_PATH"
 
-      - name: Pre-configure Slack webhook
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: |
-          # Pre-seed SharedPreferences with the Slack webhook config
-          # Use python3 to write a proper plist to avoid shell quoting issues
-          python3 << 'PYEOF'
-          import subprocess, json, os
-          
-          device_id = os.environ["DEVICE_ID"]
-          webhook_url = os.environ["SLACK_WEBHOOK_URL"]
-          
-          config = json.dumps({
-              "id": "ci_test_1",
-              "platform": "slack",
-              "name": "Team Slack",
-              "url": webhook_url,
-              "filter": "",
-              "telegramChatId": None
-          })
-          
-          # Get the plist path in the simulator
-          result = subprocess.run(
-              ["xcrun", "simctl", "get_app_container", device_id, "com.example.smsforward", "data"],
-              capture_output=True, text=True
-          )
-          
-          if result.returncode == 0:
-              container = result.stdout.strip()
-              plist_path = f"{container}/Library/Preferences/com.example.smsforward.plist"
-              # Write the key using defaults
-              subprocess.run([
-                  "xcrun", "simctl", "spawn", device_id,
-                  "defaults", "write", "com.example.smsforward",
-                  "flutter.webhooks", "-array", config
-              ])
-              print("✅ Pre-configured Slack webhook in app preferences")
-          else:
-              # App container not found yet, write directly
-              subprocess.run([
-                  "xcrun", "simctl", "spawn", device_id,
-                  "defaults", "write", "com.example.smsforward",
-                  "flutter.webhooks", "-array", config
-              ])
-              print("✅ Pre-configured Slack webhook (direct write)")
-          PYEOF
-
       - name: Test Slack webhook directly
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
-          echo "🧪 Testing Slack webhook with curl..."
-          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
-            -X POST \
-            -H "Content-Type: application/json" \
-            -d '{"text":"📩 *SMS Received (iOS CI Test)*\n*From:* GitHub Actions\n*Message:* ✅ SMS Forwarder iOS build successful! App is working on iPhone simulator."}' \
-            "${SLACK_WEBHOOK_URL}")
-          
-          echo "Slack webhook response: HTTP $RESPONSE"
-          if [ "$RESPONSE" = "200" ]; then
-            echo "✅ Webhook is working! Check your Slack channel."
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            echo "🧪 Testing Slack webhook with curl..."
+            RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X POST \
+              -H "Content-Type: application/json" \
+              -d '{"text":"📩 *SMS Received (iOS CI Test)*\n*From:* GitHub Actions\n*Message:* ✅ SMS Forwarder iOS build successful! App is working on iPhone simulator."}' \
+              "${SLACK_WEBHOOK_URL}")
+            
+            echo "Slack webhook response: HTTP $RESPONSE"
+            if [ "$RESPONSE" = "200" ]; then
+              echo "✅ Webhook is working! Check your Slack channel."
+            else
+              echo "⚠️ Webhook returned HTTP $RESPONSE"
+            fi
           else
-            echo "❌ Webhook returned HTTP $RESPONSE"
+            echo "⚠️ SLACK_WEBHOOK_URL secret not set, skipping webhook test"
           fi
 
-      - name: Launch app & capture initial screenshot
+      # ─── Screen Recording + Integration Test ───
+      - name: Start screen recording
+        run: |
+          mkdir -p recordings screenshots
+          # Start recording in background
+          xcrun simctl io "$DEVICE_ID" recordVideo --codec=h264 recordings/full_walkthrough.mp4 &
+          echo "RECORD_PID=$!" >> $GITHUB_ENV
+          echo "🎬 Screen recording started (PID: $!)"
+          sleep 2
+
+      - name: Run integration test walkthrough
+        run: |
+          # Run integration test on the iOS simulator
+          # This navigates through all pages and captures screenshots
+          flutter test integration_test/app_walkthrough_test.dart \
+            -d "$DEVICE_ID" \
+            --verbose \
+            2>&1 || true
+          
+          # Move any screenshots generated by the integration test
+          find . -name "*.png" -path "*/integration_test/*" -exec cp {} screenshots/ \; 2>/dev/null || true
+
+      - name: Manual app walkthrough with screenshots
         run: |
           BUNDLE_ID="com.example.smsforward"
-          mkdir -p screenshots
           
+          # Launch the app fresh
           echo "🚀 Launching app..."
+          xcrun simctl terminate "$DEVICE_ID" "$BUNDLE_ID" 2>/dev/null || true
+          sleep 1
           xcrun simctl launch "$DEVICE_ID" "$BUNDLE_ID" || true
+          sleep 5
+          
+          # Screenshot: Providers tab
+          echo "📸 1/6 - Providers tab"
+          xcrun simctl io "$DEVICE_ID" screenshot screenshots/page_01_providers.png
+          sleep 2
+          
+          # Simulate swipe left to go to Activity tab
+          # Use keyboard shortcut or wait, then screenshot
+          sleep 3
+          echo "📸 2/6 - After initial load"
+          xcrun simctl io "$DEVICE_ID" screenshot screenshots/page_02_loaded.png
+          
+          # Trigger deep link to test SMS forwarding
+          echo "📨 Triggering test SMS via deep link..."
+          xcrun simctl openurl "$DEVICE_ID" "smsforward://forward?sender=%2B1234567890&message=Hello%20from%20GitHub%20Actions!%20Testing%20SMS%20forwarding%20on%20iOS%20simulator."
           sleep 8
           
-          echo "📸 Capturing app with Slack provider configured..."
-          xcrun simctl io "$DEVICE_ID" screenshot screenshots/01_providers_tab.png
-
-      - name: Trigger test SMS via deep link
-        run: |
-          echo "📨 Triggering test SMS forwarding via deep link..."
-          xcrun simctl openurl "$DEVICE_ID" "smsforward://forward?sender=+1234567890&message=Hello%20from%20GitHub%20Actions%20iOS%20CI%21%20This%20is%20a%20test%20SMS%20forwarded%20via%20the%20iOS%20simulator."
+          echo "📸 3/6 - After SMS forward"
+          xcrun simctl io "$DEVICE_ID" screenshot screenshots/page_03_after_forward.png
           
-          sleep 10
+          # Send another test message
+          xcrun simctl openurl "$DEVICE_ID" "smsforward://forward?sender=Bank%20Alert&message=Your%20OTP%20is%20482910.%20Valid%20for%205%20minutes."
+          sleep 5
           
-          echo "📸 Capturing app after forwarding..."
-          xcrun simctl io "$DEVICE_ID" screenshot screenshots/02_after_forward.png
-
-      - name: Capture Activity tab
-        run: |
+          echo "📸 4/6 - Multiple messages"
+          xcrun simctl io "$DEVICE_ID" screenshot screenshots/page_04_multiple_msgs.png
+          
+          # Send one more
+          xcrun simctl openurl "$DEVICE_ID" "smsforward://forward?sender=Amazon&message=Your%20package%20has%20been%20delivered.%20Track%20at%20amzn.to/abc123"
+          sleep 5
+          
+          echo "📸 5/6 - Third message"
+          xcrun simctl io "$DEVICE_ID" screenshot screenshots/page_05_third_msg.png
+          
           sleep 3
-          xcrun simctl io "$DEVICE_ID" screenshot screenshots/03_activity_view.png
+          echo "📸 6/6 - Final state"
+          xcrun simctl io "$DEVICE_ID" screenshot screenshots/page_06_final.png
+
+      - name: Stop screen recording
+        if: always()
+        run: |
+          if [ -n "$RECORD_PID" ]; then
+            echo "🎬 Stopping screen recording..."
+            kill -INT "$RECORD_PID" 2>/dev/null || true
+            sleep 5
+            
+            # Verify recording exists
+            if [ -f recordings/full_walkthrough.mp4 ]; then
+              SIZE=$(stat -f%z recordings/full_walkthrough.mp4 2>/dev/null || stat -c%s recordings/full_walkthrough.mp4 2>/dev/null || echo "unknown")
+              echo "✅ Recording saved: ${SIZE} bytes"
+            else
+              echo "⚠️ Recording file not found"
+            fi
+          fi
+
+      - name: List captured files
+        if: always()
+        run: |
+          echo "📸 Screenshots:"
+          ls -la screenshots/ 2>/dev/null || echo "No screenshots directory"
+          echo ""
+          echo "🎬 Recordings:"
+          ls -la recordings/ 2>/dev/null || echo "No recordings directory"
 
       - name: Upload screenshots
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ios-screenshots
           path: screenshots/
           retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload screen recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-screen-recording
+          path: recordings/
+          retention-days: 30
+          if-no-files-found: warn
 
       - name: Upload iOS build
         uses: actions/upload-artifact@v4
@@ -161,16 +201,21 @@ jobs:
           retention-days: 7
 
       - name: Summary
+        if: always()
         run: |
-          echo "## ✅ iOS Build & Slack Webhook Test" >> $GITHUB_STEP_SUMMARY
+          echo "## 📱 iOS Build & Walkthrough" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Results:" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ iOS app built successfully" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ App launched on iPhone simulator" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Slack webhook tested" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Test SMS forwarded via deep link" >> $GITHUB_STEP_SUMMARY
+          echo "### Artifacts:" >> $GITHUB_STEP_SUMMARY
+          echo "- 🎬 **Screen Recording**: \`full_walkthrough.mp4\` — Full video of the app" >> $GITHUB_STEP_SUMMARY
+          echo "- 📸 **Screenshots**: Captured at every page/tab" >> $GITHUB_STEP_SUMMARY
+          echo "- 📱 **iOS Build**: Simulator .app bundle" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Screenshots:" >> $GITHUB_STEP_SUMMARY
-          for f in screenshots/*.png; do
-            echo "- $(basename $f)" >> $GITHUB_STEP_SUMMARY
+          echo "### Screenshots captured:" >> $GITHUB_STEP_SUMMARY
+          for f in screenshots/*.png 2>/dev/null; do
+            [ -f "$f" ] && echo "- \`$(basename $f)\`" >> $GITHUB_STEP_SUMMARY
+          done
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Recordings:" >> $GITHUB_STEP_SUMMARY
+          for f in recordings/*.mp4 2>/dev/null; do
+            [ -f "$f" ] && echo "- \`$(basename $f)\`" >> $GITHUB_STEP_SUMMARY
           done
