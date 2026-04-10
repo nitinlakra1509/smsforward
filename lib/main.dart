@@ -25,7 +25,7 @@ class SMSForwarderApp extends StatelessWidget {
         colorSchemeSeed: const Color(0xFF6366F1),
         scaffoldBackgroundColor: const Color(0xFF0F0F1A),
       ),
-      home: const HomeScreen(),
+      home: HomeScreen(key: HomeScreen.globalKey),
     );
   }
 }
@@ -123,11 +123,14 @@ class ForwardLog {
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
+  /// Global key for accessing state in integration tests
+  static final globalKey = GlobalKey<HomeScreenState>();
+
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  State<HomeScreen> createState() => HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin {
+class HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin {
   late TabController _tabController;
   late AppLinks _appLinks;
   List<WebhookConfig> _configs = [];
@@ -196,6 +199,15 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
     if (message.isEmpty) return;
 
+    await _processIncomingSMS(sender, message);
+  }
+
+  /// Public method for integration tests to simulate an incoming SMS.
+  Future<void> simulateIncomingSMS(String sender, String message) async {
+    await _processIncomingSMS(sender, message);
+  }
+
+  Future<void> _processIncomingSMS(String sender, String message) async {
     // Process against all webhook configs
     for (final config in _configs) {
       // Apply filter: if filter is set, only forward if message contains it
