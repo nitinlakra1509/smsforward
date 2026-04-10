@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -7,117 +6,93 @@ import 'package:smsforward/main.dart' as app;
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  group('App Walkthrough - All Pages', () {
-    testWidgets('Navigate through all tabs and capture screenshots',
-        (WidgetTester tester) async {
-      // Launch the app
-      app.main();
-      await tester.pumpAndSettle(const Duration(seconds: 3));
+  testWidgets('Full app walkthrough with screenshots', (tester) async {
+    // Launch the app
+    app.main();
+    await tester.pumpAndSettle(const Duration(seconds: 3));
 
-      // ── Screenshot 1: Providers Tab (Home) ──
-      await binding.convertFlutterSurfaceToImage();
+    // ── Page 1: Providers Tab (empty state) ──
+    await tester.pumpAndSettle();
+    await binding.takeScreenshot('01_providers_empty');
+
+    // ── Page 2: Tap "Add Provider" FAB ──
+    final addBtn = find.text('Add Provider');
+    expect(addBtn, findsOneWidget);
+    await tester.tap(addBtn);
+    await tester.pumpAndSettle(const Duration(seconds: 1));
+    await binding.takeScreenshot('02_add_provider_slack');
+
+    // ── Page 3: Select Discord ──
+    await tester.tap(find.text('Discord'));
+    await tester.pumpAndSettle();
+    await binding.takeScreenshot('03_add_provider_discord');
+
+    // ── Page 4: Select Telegram (shows Chat ID field) ──
+    await tester.tap(find.text('Telegram'));
+    await tester.pumpAndSettle();
+    await binding.takeScreenshot('04_add_provider_telegram');
+
+    // ── Page 5: Select Webhook ──
+    await tester.tap(find.text('Webhook'));
+    await tester.pumpAndSettle();
+    await binding.takeScreenshot('05_add_provider_webhook');
+
+    // ── Page 6: Fill Slack form and save ──
+    // Go back to Slack
+    final slackChips = find.text('Slack');
+    await tester.tap(slackChips.last);
+    await tester.pumpAndSettle();
+
+    // Fill name
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Display Name'),
+      'Team Slack',
+    );
+    await tester.pumpAndSettle();
+
+    // Fill URL
+    final urlLabel = find.widgetWithText(TextField, 'Webhook URL');
+    if (urlLabel.evaluate().isNotEmpty) {
+      await tester.enterText(urlLabel, 'https://hooks.slack.com/services/xxx');
+    }
+    await tester.pumpAndSettle();
+
+    // Fill filter
+    final filterField = find.widgetWithText(TextField, 'Keyword Filter (optional)');
+    if (filterField.evaluate().isNotEmpty) {
+      await tester.enterText(filterField, 'OTP');
+    }
+    await tester.pumpAndSettle();
+    await binding.takeScreenshot('06_slack_form_filled');
+
+    // Save
+    await tester.tap(find.text('Save Provider'));
+    await tester.pumpAndSettle(const Duration(seconds: 1));
+
+    // ── Page 7: Provider added ──
+    await binding.takeScreenshot('07_provider_saved');
+
+    // ── Page 8: Activity Tab ──
+    await tester.tap(find.text('Activity'));
+    await tester.pumpAndSettle(const Duration(seconds: 1));
+    await binding.takeScreenshot('08_activity_tab');
+
+    // ── Page 9: Setup Tab ──
+    await tester.tap(find.text('Setup'));
+    await tester.pumpAndSettle(const Duration(seconds: 1));
+    await binding.takeScreenshot('09_setup_tab_top');
+
+    // ── Page 10: Scroll down on Setup ──
+    final scrollable = find.byType(SingleChildScrollView);
+    if (scrollable.evaluate().isNotEmpty) {
+      await tester.drag(scrollable, const Offset(0, -300));
       await tester.pumpAndSettle();
-      await binding.takeScreenshot('01_providers_tab');
+    }
+    await binding.takeScreenshot('10_setup_tab_url');
 
-      // ── Screenshot 2: Tap "Add Provider" FAB ──
-      final addButton = find.text('Add Provider');
-      if (addButton.evaluate().isNotEmpty) {
-        await tester.tap(addButton);
-        await tester.pumpAndSettle(const Duration(seconds: 1));
-        await binding.takeScreenshot('02_add_provider_sheet');
-
-        // ── Screenshot 3: Select Discord platform ──
-        final discordChip = find.text('Discord');
-        if (discordChip.evaluate().isNotEmpty) {
-          await tester.tap(discordChip);
-          await tester.pumpAndSettle();
-          await binding.takeScreenshot('03_discord_selected');
-        }
-
-        // ── Screenshot 4: Select Telegram platform ──
-        final telegramChip = find.text('Telegram');
-        if (telegramChip.evaluate().isNotEmpty) {
-          await tester.tap(telegramChip);
-          await tester.pumpAndSettle();
-          await binding.takeScreenshot('04_telegram_selected');
-        }
-
-        // ── Screenshot 5: Select Webhook platform ──
-        final webhookChip = find.text('Webhook');
-        if (webhookChip.evaluate().isNotEmpty) {
-          await tester.tap(webhookChip);
-          await tester.pumpAndSettle();
-          await binding.takeScreenshot('05_webhook_selected');
-        }
-
-        // ── Screenshot 6: Select Slack and fill form ──
-        final slackChip = find.text('Slack');
-        if (slackChip.evaluate().isNotEmpty) {
-          await tester.tap(slackChip);
-          await tester.pumpAndSettle();
-        }
-
-        // Fill in the form
-        final nameField = find.widgetWithText(TextField, 'Display Name');
-        if (nameField.evaluate().isNotEmpty) {
-          await tester.enterText(nameField, 'Team Slack');
-          await tester.pumpAndSettle();
-        }
-
-        final urlField = find.widgetWithText(TextField, 'Webhook URL');
-        if (urlField.evaluate().isNotEmpty) {
-          await tester.enterText(urlField, 'https://hooks.slack.com/services/...');
-          await tester.pumpAndSettle();
-        }
-
-        final filterField = find.widgetWithText(TextField, 'Keyword Filter (optional)');
-        if (filterField.evaluate().isNotEmpty) {
-          await tester.enterText(filterField, 'OTP');
-          await tester.pumpAndSettle();
-        }
-
-        await binding.takeScreenshot('06_slack_form_filled');
-
-        // Save the provider
-        final saveButton = find.text('Save Provider');
-        if (saveButton.evaluate().isNotEmpty) {
-          await tester.tap(saveButton);
-          await tester.pumpAndSettle(const Duration(seconds: 1));
-        }
-      }
-
-      // ── Screenshot 7: Providers tab with a provider added ──
-      await tester.pumpAndSettle();
-      await binding.takeScreenshot('07_provider_added');
-
-      // ── Screenshot 8: Navigate to Activity tab ──
-      final activityTab = find.text('Activity');
-      if (activityTab.evaluate().isNotEmpty) {
-        await tester.tap(activityTab);
-        await tester.pumpAndSettle(const Duration(seconds: 1));
-        await binding.takeScreenshot('08_activity_tab');
-      }
-
-      // ── Screenshot 9: Navigate to Setup tab ──
-      final setupTab = find.text('Setup');
-      if (setupTab.evaluate().isNotEmpty) {
-        await tester.tap(setupTab);
-        await tester.pumpAndSettle(const Duration(seconds: 1));
-        await binding.takeScreenshot('09_setup_tab');
-      }
-
-      // ── Screenshot 10: Scroll down on Setup tab ──
-      await tester.drag(find.byType(SingleChildScrollView), const Offset(0, -300));
-      await tester.pumpAndSettle();
-      await binding.takeScreenshot('10_setup_url_scheme');
-
-      // ── Screenshot 11: Go back to Providers and tap test button ──
-      final providersTab = find.text('Providers');
-      if (providersTab.evaluate().isNotEmpty) {
-        await tester.tap(providersTab);
-        await tester.pumpAndSettle(const Duration(seconds: 1));
-        await binding.takeScreenshot('11_providers_final');
-      }
-    });
+    // ── Page 11: Back to Providers ──
+    await tester.tap(find.text('Providers'));
+    await tester.pumpAndSettle(const Duration(seconds: 1));
+    await binding.takeScreenshot('11_providers_with_config');
   });
 }
